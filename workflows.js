@@ -333,14 +333,14 @@ const PollWorkflow = {
   buildPollBlocks(pollId, question, options, voteState, expiry, isClosed = false) {
     const timeZone = Session.getScriptTimeZone();
     const timeStr = Utilities.formatDate(expiry, timeZone, "h:mm a");
-    const statusText = isClosed ? "*CLOSED*" : `Voting ends at \`${timeStr}\``;
+    const statusText = isClosed ? "🔒 *CLOSED*" : `Voting ends at \`${timeStr}\``;
     
     const blocks = [
       {
         "type": "section",
         "text": { 
           "type": "mrkdwn", 
-          "text": `📊 *${question}*\n<!channel> • ${statusText}` 
+          "text": `<!channel>\n📊 *${question}*\n${statusText}` 
         }
       },
       { "type": "divider" }
@@ -350,13 +350,13 @@ const PollWorkflow = {
       const voters = (voteState && voteState[i] && Array.isArray(voteState[i].voters)) ? voteState[i].voters : [];
       const voteCount = voters.length;
       const bar = voteCount > 0 ? "⦿".repeat(voteCount) : "○";
-      const votersListStr = voteCount > 0 ? `\n> ${voters.map(id => `<@${id}>`).join(" ")}` : "";
+      const votersListStr = voteCount > 0 ? `\n${voters.map(id => `<@${id}>`).join(" ")}` : "";
       
       const section = {
         "type": "section",
         "text": { 
           "type": "mrkdwn", 
-          "text": `*${optText}*\n${bar} _(${voteCount} vote${voteCount === 1 ? '' : 's'})_${votersListStr}` 
+          "text": `*${optText}*\n${bar} *(${voteCount})*${votersListStr}` 
         }
       };
 
