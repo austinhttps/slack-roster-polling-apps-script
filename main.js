@@ -28,11 +28,7 @@ function doPost(e) {
       
       if (payload.type === "block_actions" && payload.actions && payload.actions.length > 0) {
         const actionValue = payload.actions[0].value;
-        const responsePayload = PollWorkflow.handleVote(payload, actionValue);
-        if (responsePayload) {
-          return ContentService.createTextOutput(JSON.stringify(responsePayload))
-            .setMimeType(ContentService.MimeType.JSON);
-        }
+        PollWorkflow.handleVote(payload, actionValue);
       }
     }
   } catch (err) {

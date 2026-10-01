@@ -168,15 +168,15 @@ class PollWorkflow {
   }
 
   /**
-   * Handles button clicks and returns updated Block Kit response
+   * Handles button clicks, updates sheet, and refreshes message via response_url
    */
   static handleVote(payload, actionValue) {
-    if (!actionValue || !actionValue.includes("|")) return null;
+    if (!actionValue || !actionValue.includes("|")) return;
 
     const [pollId, optIndexStr] = actionValue.split("|");
     const targetOptIndex = parseInt(optIndexStr, 10);
     const userId = payload.user ? payload.user.id : null;
-    if (!userId) return null;
+    if (!userId) return;
 
     const sheet = Core.getSheet("ActivePolls");
     const data = sheet.getDataRange().getValues();
@@ -201,7 +201,7 @@ class PollWorkflow {
 
     if (!pollData || rowIndex === -1) {
       console.warn(`Poll target not found or already closed for pollId: ${pollId}`);
-      return null;
+      return;
     }
 
     // Toggle vote logic
@@ -221,20 +221,41 @@ class PollWorkflow {
     // Save updated vote tally to Sheet
     sheet.getRange(rowIndex, 8).setValue(JSON.stringify(pollData));
 
-    // Re-render blocks
+    // Re-render blocks with voter names
     const expiryRaw = data[rowIndex - 1][4];
     const expiryDate = (expiryRaw instanceof Date) ? expiryRaw : new Date(expiryRaw);
     const question = data[rowIndex - 1][1];
     const options = pollData.map(p => p.text);
     const blocks = this.buildPollBlocks(pollId, question, options, pollData, expiryDate, false);
 
-    // Return replacement message payload for direct in-channel update (eliminates timeouts)
-    return {
-      response_type: "in_channel",
+    const updatePayload = {
       replace_original: true,
       text: `<!channel> 📊 Poll: ${question}`,
       blocks: blocks
     };
+
+    // Update in-channel message immediately via response_url (Slack standard for interactive button updates)
+    if (payload.response_url) {
+      try {
+        UrlFetchApp.fetch(payload.response_url, {
+          method: "post",
+          contentType: "application/json; charset=utf-8",
+          payload: JSON.stringify(updatePayload),
+          muteHttpExceptions: true
+        });
+      } catch (err) {
+        console.error("Error updating message via response_url: " + err);
+      }
+    } else {
+      const channelId = (payload.channel && payload.channel.id) || (payload.container && payload.container.channel_id) || data[rowIndex - 1][5];
+      const messageTs = (payload.container && payload.container.message_ts) || (payload.message && payload.message.ts) || String(data[rowIndex - 1][6]).replace(/^'/, "");
+      Core.slackApi("chat.update", {
+        channel: channelId,
+        ts: messageTs,
+        blocks: blocks,
+        text: `<!channel> 📊 Poll: ${question}`
+      });
+    }
   }
 
   /**
@@ -267,17 +288,19 @@ class PollWorkflow {
         // 1. Mark as Closed
         sheet.getRange(i + 1, 3).setValue("Closed");
 
-        // 2. Post Thread Summary
+        // 2. Post Thread Summary with voter list
         let resultText = `🏁 *Poll Results: ${question}*\n`;
         results.forEach(r => {
           const voterList = Array.isArray(r.voters) ? r.voters : [];
-          resultText += `• *${r.text}*: ${voterList.length} votes\n`;
+          const voterMentions = voterList.length > 0 ? ` (${voterList.map(id => `<@${id}>`).join(", ")})` : "";
+          resultText += `• *${r.text}*: ${voterList.length} vote${voterList.length === 1 ? '' : 's'}${voterMentions}\n`;
         });
 
         const threadRes = Core.slackApi("chat.postMessage", {
           channel: channelId,
           thread_ts: rawTs,
-          text: resultText
+          text: resultText,
+          link_names: 1
         });
         
         // 3. Update original message (remove buttons)
@@ -296,7 +319,7 @@ class PollWorkflow {
   }
 
   /**
-   * UI Builder for the Slack Message
+   * UI Builder for the Slack Message with voter names
    */
   static buildPollBlocks(pollId, question, options, voteState, expiry, isClosed = false) {
     const timeZone = Session.getScriptTimeZone();
@@ -306,18 +329,26 @@ class PollWorkflow {
     const blocks = [
       {
         "type": "section",
-        "text": { "type": "mrkdwn", "text": `📊 *${question}*\n<!channel> — ${statusText}` }
+        "text": { 
+          "type": "mrkdwn", 
+          "text": `📊 *${question}*\n<!channel> • ${statusText}` 
+        }
       },
       { "type": "divider" }
     ];
 
     options.forEach((optText, i) => {
-      const voteCount = (voteState && voteState[i] && voteState[i].voters) ? voteState[i].voters.length : 0;
+      const voters = (voteState && voteState[i] && Array.isArray(voteState[i].voters)) ? voteState[i].voters : [];
+      const voteCount = voters.length;
       const bar = voteCount > 0 ? "⦿".repeat(voteCount) : "○";
+      const votersListStr = voteCount > 0 ? `\n> ${voters.map(id => `<@${id}>`).join(" ")}` : "";
       
       const section = {
         "type": "section",
-        "text": { "type": "mrkdwn", "text": `*${optText}*\n${bar} _(${voteCount} votes)_` }
+        "text": { 
+          "type": "mrkdwn", 
+          "text": `*${optText}*\n${bar} _(${voteCount} vote${voteCount === 1 ? '' : 's'})_${votersListStr}` 
+        }
       };
 
       if (!isClosed) {
