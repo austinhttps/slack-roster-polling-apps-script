@@ -1,8 +1,8 @@
-class RosterWorkflow {
+const RosterWorkflow = {
   /**
    * PULL: Grabs everything from Slack and updates the Spreadsheet
    */
-  static pullSlackData() {
+  pullSlackData() {
     const result = Core.slackApi("users.list", {});
     if (!result.ok) throw new Error("Slack Pull Failed: " + result.error);
 
@@ -29,15 +29,15 @@ class RosterWorkflow {
       const accountStatus = m.deleted ? "Deactivated" : "Active";
 
       const rowData = [
-        m.id,                                               // 0 (A) - ID
-        getVal(m.real_name || p.real_name, existingRow[1]), // 1 (B) - Real Name
-        getVal(p.display_name, existingRow[2]),             // 2 (C) - Display Name
-        getVal(p.email, existingRow[3]),                    // 3 (D) - Email
-        getVal(p.phone, existingRow[4]),                    // 4 (E) - Phone
-        getVal(f[SLACK_CUSTOM_FIELDS.CHAPTER]?.value, existingRow[5]),     // 5 (F)
-        getVal(f[SLACK_CUSTOM_FIELDS.AGE_RANGE]?.value, existingRow[6]),   // 6 (G)
-        getVal(f[SLACK_CUSTOM_FIELDS.MEMBERSHIP]?.value, existingRow[7]),  // 7 (H)
-        getVal(f[SLACK_CUSTOM_FIELDS.MEMBER_GROUP]?.value, existingRow[8]),// 8 (I)
+        m.id,                                                                   // 0 (A) - ID
+        getVal(m.real_name || p.real_name, existingRow[1]),                     // 1 (B) - Real Name
+        getVal(p.display_name, existingRow[2]),                                 // 2 (C) - Display Name
+        getVal(p.email, existingRow[3]),                                        // 3 (D) - Email
+        getVal(p.phone, existingRow[4]),                                        // 4 (E) - Phone
+        getVal(f[SLACK_CUSTOM_FIELDS.CHAPTER]?.value, existingRow[5]),          // 5 (F)
+        getVal(f[SLACK_CUSTOM_FIELDS.AGE_RANGE]?.value, existingRow[6]),        // 6 (G)
+        getVal(f[SLACK_CUSTOM_FIELDS.MEMBERSHIP]?.value, existingRow[7]),       // 7 (H)
+        getVal(f[SLACK_CUSTOM_FIELDS.MEMBER_GROUP]?.value, existingRow[8]),     // 8 (I)
         getVal(f[SLACK_CUSTOM_FIELDS.TITLE]?.value || p.title, existingRow[9]), // 9 (J) - TITLE
         new Date(),                                                             // 10 (K) - UPDATED
         accountStatus                                                           // 11 (L) - STATUS
@@ -53,13 +53,13 @@ class RosterWorkflow {
     });
 
     return `Pull Complete: ${added} added, ${updated} updated.`;
-  }
+  },
 
   /**
    * PUSH: Takes Spreadsheet edits and sends them to Slack.
    * Skips accounts where Column L (Status) is "Deactivated".
    */
-  static bulkPushToSlack() {
+  bulkPushToSlack() {
     const sheet = Core.getSheet(ROSTER_CONFIG.SHEET_NAME);
     const data = sheet.getDataRange().getValues();
     let count = 0;
@@ -107,13 +107,13 @@ class RosterWorkflow {
     
     return `Push Complete: ${count} updated. ${skipped} deactivated users skipped. ${adminSkipped} admin accounts skipped (Slack admin protection).`;
   }
-}
+};
 
-class PollWorkflow {
+const PollWorkflow = {
   /**
    * Parses the /poll command and creates the initial message
    */
-  static createTimedPoll(channelId, rawText, defaultHours) {
+  createTimedPoll(channelId, rawText, defaultHours) {
     // Normalize smart/curly quotes to standard double quotes
     let cleanText = (rawText || "").replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"').trim();
     let durationHrs = defaultHours || 24;
@@ -149,7 +149,7 @@ class PollWorkflow {
       channel: channelId,
       blocks: blocks,
       text: `<!channel> 📊 New Poll: ${question}`,
-      link_names: true
+      link_names: 1
     });
 
     if (res.ok) {
@@ -164,13 +164,14 @@ class PollWorkflow {
         "'" + String(res.ts),               // Col G (Message TS - apostrophe preserves string precision)
         JSON.stringify(initialVoteState)    // Col H
       ]);
+      SpreadsheetApp.flush();
     }
-  }
+  },
 
   /**
    * Handles button clicks, updates sheet, and refreshes message
    */
-  static handleVote(payload, actionValue) {
+  handleVote(payload, actionValue) {
     console.log("handleVote received actionValue: " + actionValue);
     if (!actionValue || !actionValue.includes("|")) {
       console.warn("Invalid actionValue: " + actionValue);
@@ -267,12 +268,12 @@ class PollWorkflow {
     }
 
     console.log(`Vote updated for user ${userId}. chat.update result: ${updateRes.ok}`);
-  }
+  },
 
   /**
    * Closes expired polls and posts a results summary
    */
-  static checkExpirations() {
+  checkExpirations() {
     const sheet = Core.getSheet("ActivePolls");
     const data = sheet.getDataRange().getValues();
     const now = new Date();
@@ -328,12 +329,12 @@ class PollWorkflow {
         console.log(`Poll [${pollId}] expired. Thread: ${threadRes.ok}, Update: ${updateRes.ok}`);
       }
     }
-  }
+  },
 
   /**
    * UI Builder for the Slack Message with voter names
    */
-  static buildPollBlocks(pollId, question, options, voteState, expiry, isClosed = false) {
+  buildPollBlocks(pollId, question, options, voteState, expiry, isClosed = false) {
     const timeZone = Session.getScriptTimeZone();
     const timeStr = Utilities.formatDate(expiry, timeZone, "h:mm a");
     const statusText = isClosed ? "*CLOSED*" : `Voting ends at \`${timeStr}\``;
@@ -377,4 +378,4 @@ class PollWorkflow {
 
     return blocks;
   }
-}
+};
