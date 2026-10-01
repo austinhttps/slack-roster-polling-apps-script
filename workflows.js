@@ -172,19 +172,12 @@ const PollWorkflow = {
    * Handles button clicks, updates sheet, and refreshes message
    */
   handleVote(payload, actionValue) {
-    console.log("handleVote received actionValue: " + actionValue);
-    if (!actionValue || !actionValue.includes("|")) {
-      console.warn("Invalid actionValue: " + actionValue);
-      return;
-    }
+    if (!actionValue || !actionValue.includes("|")) return;
 
     const [pollId, optIndexStr] = actionValue.split("|");
     const targetOptIndex = parseInt(optIndexStr, 10);
     const userId = payload.user ? payload.user.id : null;
-    if (!userId) {
-      console.warn("No userId found in payload");
-      return;
-    }
+    if (!userId) return;
 
     const sheet = Core.getSheet("ActivePolls");
     const data = sheet.getDataRange().getValues();
@@ -212,19 +205,24 @@ const PollWorkflow = {
       return;
     }
 
-    // Toggle vote logic
-    pollData.forEach((opt, idx) => {
-      if (!Array.isArray(opt.voters)) opt.voters = [];
-      const voterIdx = opt.voters.indexOf(userId);
+    // 1. Single-choice vote logic (one vote per user across all options)
+    const currentOptIndex = pollData.findIndex(opt => Array.isArray(opt.voters) && opt.voters.includes(userId));
 
-      if (idx === targetOptIndex) {
-        if (voterIdx === -1) {
-          opt.voters.push(userId);
-        } else {
-          opt.voters.splice(voterIdx, 1);
-        }
+    // Remove user from all options
+    pollData.forEach(opt => {
+      if (Array.isArray(opt.voters)) {
+        opt.voters = opt.voters.filter(id => id !== userId);
+      } else {
+        opt.voters = [];
       }
     });
+
+    // If user clicked a different option (or had not voted yet), add vote to clicked option
+    // If user clicked the same option they already voted for, it remains unvoted (toggle off)
+    if (currentOptIndex !== targetOptIndex) {
+      if (!Array.isArray(pollData[targetOptIndex].voters)) pollData[targetOptIndex].voters = [];
+      pollData[targetOptIndex].voters.push(userId);
+    }
 
     // Save updated vote tally to Sheet
     sheet.getRange(rowIndex, 8).setValue(JSON.stringify(pollData));
@@ -237,37 +235,35 @@ const PollWorkflow = {
     const options = pollData.map(p => p.text);
     const blocks = this.buildPollBlocks(pollId, question, options, pollData, expiryDate, false);
 
-    // Extract live channel ID and message TS directly from payload
-    const channelId = (payload.channel && payload.channel.id) || (payload.container && payload.container.channel_id) || data[rowIndex - 1][5];
-    const messageTs = (payload.container && payload.container.message_ts) || (payload.message && payload.message.ts) || String(data[rowIndex - 1][6]).replace(/^'/, "");
+    const updatePayload = {
+      replace_original: true,
+      text: `<!channel> 📊 Poll: ${question}`,
+      blocks: blocks
+    };
 
-    // 1. Direct API call to update message
-    const updateRes = Core.slackApi("chat.update", {
-      channel: channelId,
-      ts: messageTs,
-      blocks: blocks,
-      text: `<!channel> 📊 Poll: ${question}`
-    });
-
-    // 2. Also send response_url if present
+    // Update message immediately via response_url (fastest & reliable for interactive buttons)
     if (payload.response_url) {
       try {
-        UrlFetchApp.fetch(payload.response_url, {
+        const resp = UrlFetchApp.fetch(payload.response_url, {
           method: "post",
           contentType: "application/json; charset=utf-8",
-          payload: JSON.stringify({
-            replace_original: true,
-            text: `<!channel> 📊 Poll: ${question}`,
-            blocks: blocks
-          }),
+          payload: JSON.stringify(updatePayload),
           muteHttpExceptions: true
         });
+        console.log(`response_url status: ${resp.getResponseCode()}, body: ${resp.getContentText()}`);
       } catch (err) {
         console.error("Error updating message via response_url: " + err);
       }
+    } else {
+      const channelId = (payload.channel && payload.channel.id) || (payload.container && payload.container.channel_id) || data[rowIndex - 1][5];
+      const messageTs = (payload.container && payload.container.message_ts) || (payload.message && payload.message.ts) || String(data[rowIndex - 1][6]).replace(/^'/, "");
+      Core.slackApi("chat.update", {
+        channel: channelId,
+        ts: messageTs,
+        blocks: blocks,
+        text: `<!channel> 📊 Poll: ${question}`
+      });
     }
-
-    console.log(`Vote updated for user ${userId}. chat.update result: ${updateRes.ok}`);
   },
 
   /**
