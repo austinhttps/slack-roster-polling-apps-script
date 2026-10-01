@@ -168,15 +168,22 @@ class PollWorkflow {
   }
 
   /**
-   * Handles button clicks, updates sheet, and refreshes message via response_url
+   * Handles button clicks, updates sheet, and refreshes message
    */
   static handleVote(payload, actionValue) {
-    if (!actionValue || !actionValue.includes("|")) return;
+    console.log("handleVote received actionValue: " + actionValue);
+    if (!actionValue || !actionValue.includes("|")) {
+      console.warn("Invalid actionValue: " + actionValue);
+      return;
+    }
 
     const [pollId, optIndexStr] = actionValue.split("|");
     const targetOptIndex = parseInt(optIndexStr, 10);
     const userId = payload.user ? payload.user.id : null;
-    if (!userId) return;
+    if (!userId) {
+      console.warn("No userId found in payload");
+      return;
+    }
 
     const sheet = Core.getSheet("ActivePolls");
     const data = sheet.getDataRange().getValues();
@@ -191,7 +198,7 @@ class PollWorkflow {
       if (sheetPollId === String(pollId).trim() && status.toLowerCase() === "open") {
         rowIndex = i + 1;
         try {
-          pollData = JSON.parse(data[i][7]);
+          pollData = typeof data[i][7] === "string" ? JSON.parse(data[i][7]) : data[i][7];
         } catch (e) {
           console.error("Failed to parse poll JSON in sheet: " + e);
         }
@@ -220,6 +227,7 @@ class PollWorkflow {
 
     // Save updated vote tally to Sheet
     sheet.getRange(rowIndex, 8).setValue(JSON.stringify(pollData));
+    SpreadsheetApp.flush();
 
     // Re-render blocks with voter names
     const expiryRaw = data[rowIndex - 1][4];
@@ -228,34 +236,37 @@ class PollWorkflow {
     const options = pollData.map(p => p.text);
     const blocks = this.buildPollBlocks(pollId, question, options, pollData, expiryDate, false);
 
-    const updatePayload = {
-      replace_original: true,
-      text: `<!channel> 📊 Poll: ${question}`,
-      blocks: blocks
-    };
+    // Extract live channel ID and message TS directly from payload
+    const channelId = (payload.channel && payload.channel.id) || (payload.container && payload.container.channel_id) || data[rowIndex - 1][5];
+    const messageTs = (payload.container && payload.container.message_ts) || (payload.message && payload.message.ts) || String(data[rowIndex - 1][6]).replace(/^'/, "");
 
-    // Update in-channel message immediately via response_url (Slack standard for interactive button updates)
+    // 1. Direct API call to update message
+    const updateRes = Core.slackApi("chat.update", {
+      channel: channelId,
+      ts: messageTs,
+      blocks: blocks,
+      text: `<!channel> 📊 Poll: ${question}`
+    });
+
+    // 2. Also send response_url if present
     if (payload.response_url) {
       try {
         UrlFetchApp.fetch(payload.response_url, {
           method: "post",
           contentType: "application/json; charset=utf-8",
-          payload: JSON.stringify(updatePayload),
+          payload: JSON.stringify({
+            replace_original: true,
+            text: `<!channel> 📊 Poll: ${question}`,
+            blocks: blocks
+          }),
           muteHttpExceptions: true
         });
       } catch (err) {
         console.error("Error updating message via response_url: " + err);
       }
-    } else {
-      const channelId = (payload.channel && payload.channel.id) || (payload.container && payload.container.channel_id) || data[rowIndex - 1][5];
-      const messageTs = (payload.container && payload.container.message_ts) || (payload.message && payload.message.ts) || String(data[rowIndex - 1][6]).replace(/^'/, "");
-      Core.slackApi("chat.update", {
-        channel: channelId,
-        ts: messageTs,
-        blocks: blocks,
-        text: `<!channel> 📊 Poll: ${question}`
-      });
     }
+
+    console.log(`Vote updated for user ${userId}. chat.update result: ${updateRes.ok}`);
   }
 
   /**
@@ -279,7 +290,7 @@ class PollWorkflow {
         let results = [];
 
         try {
-          results = JSON.parse(data[i][7]);
+          results = typeof data[i][7] === "string" ? JSON.parse(data[i][7]) : data[i][7];
         } catch (e) {
           console.error("Error parsing results JSON during expiration: " + e);
           continue;
@@ -287,6 +298,7 @@ class PollWorkflow {
 
         // 1. Mark as Closed
         sheet.getRange(i + 1, 3).setValue("Closed");
+        SpreadsheetApp.flush();
 
         // 2. Post Thread Summary with voter list
         let resultText = `🏁 *Poll Results: ${question}*\n`;
