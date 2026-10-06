@@ -149,7 +149,8 @@ const PollWorkflow = {
       channel: channelId,
       blocks: blocks,
       text: `<!channel> 📊 New Poll: ${question}`,
-      link_names: 1
+      link_names: 1,
+      parse: "full"
     });
 
     if (res.ok) {
@@ -164,7 +165,6 @@ const PollWorkflow = {
         "'" + String(res.ts),               // Col G (Message TS - apostrophe preserves string precision)
         JSON.stringify(initialVoteState)    // Col H
       ]);
-      SpreadsheetApp.flush();
     }
   },
 
@@ -185,8 +185,8 @@ const PollWorkflow = {
     let rowIndex = -1;
     let pollData = null;
 
-    // Search sheet for matching poll ID
-    for (let i = 1; i < data.length; i++) {
+    // Search sheet backwards from most recent polls
+    for (let i = data.length - 1; i >= 1; i--) {
       const sheetPollId = String(data[i][0]).trim();
       const status = String(data[i][2]).trim();
       if (sheetPollId === String(pollId).trim() && status.toLowerCase() === "open") {
@@ -202,6 +202,20 @@ const PollWorkflow = {
 
     if (!pollData || rowIndex === -1) {
       console.warn(`Poll target not found or already closed for pollId: ${pollId}`);
+      if (payload.response_url) {
+        try {
+          UrlFetchApp.fetch(payload.response_url, {
+            method: "post",
+            contentType: "application/json; charset=utf-8",
+            payload: JSON.stringify({
+              response_type: "ephemeral",
+              replace_original: false,
+              text: "⚠️ This poll is closed or no longer accepting votes."
+            }),
+            muteHttpExceptions: true
+          });
+        } catch (_) {}
+      }
       return;
     }
 
@@ -224,46 +238,46 @@ const PollWorkflow = {
       pollData[targetOptIndex].voters.push(userId);
     }
 
-    // Save updated vote tally to Sheet
-    sheet.getRange(rowIndex, 8).setValue(JSON.stringify(pollData));
-    SpreadsheetApp.flush();
-
-    // Re-render blocks with voter names
+    // 2. Build updated blocks immediately
     const expiryRaw = data[rowIndex - 1][4];
     const expiryDate = (expiryRaw instanceof Date) ? expiryRaw : new Date(expiryRaw);
-    const question = data[rowIndex - 1][1];
+    const question = String(data[rowIndex - 1][1] || "");
     const options = pollData.map(p => p.text);
     const blocks = this.buildPollBlocks(pollId, question, options, pollData, expiryDate, false);
 
-    const updatePayload = {
-      replace_original: true,
-      text: `<!channel> 📊 Poll: ${question}`,
-      blocks: blocks
-    };
+    // 3. Resolve live channel ID and message TS from Slack interaction payload
+    const channelId = (payload.channel && payload.channel.id) || (payload.container && payload.container.channel_id) || String(data[rowIndex - 1][5]);
+    const messageTs = (payload.container && payload.container.message_ts) || (payload.message && payload.message.ts) || String(data[rowIndex - 1][6]).replace(/^'/, "");
 
-    // Update message immediately via response_url (fastest & reliable for interactive buttons)
+    // 4. Update Slack IMMEDIATELY using chat.update (authoritative API update)
+    Core.slackApi("chat.update", {
+      channel: channelId,
+      ts: messageTs,
+      blocks: blocks,
+      text: `<!channel> 📊 Poll: ${question}`
+    });
+
+    // Also notify response_url if present
     if (payload.response_url) {
       try {
-        const resp = UrlFetchApp.fetch(payload.response_url, {
+        UrlFetchApp.fetch(payload.response_url, {
           method: "post",
           contentType: "application/json; charset=utf-8",
-          payload: JSON.stringify(updatePayload),
+          payload: JSON.stringify({
+            response_type: "in_channel",
+            replace_original: true,
+            text: `<!channel> 📊 Poll: ${question}`,
+            blocks: blocks
+          }),
           muteHttpExceptions: true
         });
-        console.log(`response_url status: ${resp.getResponseCode()}, body: ${resp.getContentText()}`);
       } catch (err) {
-        console.error("Error updating message via response_url: " + err);
+        console.error("Error with response_url: " + err);
       }
-    } else {
-      const channelId = (payload.channel && payload.channel.id) || (payload.container && payload.container.channel_id) || data[rowIndex - 1][5];
-      const messageTs = (payload.container && payload.container.message_ts) || (payload.message && payload.message.ts) || String(data[rowIndex - 1][6]).replace(/^'/, "");
-      Core.slackApi("chat.update", {
-        channel: channelId,
-        ts: messageTs,
-        blocks: blocks,
-        text: `<!channel> 📊 Poll: ${question}`
-      });
     }
+
+    // 5. Save updated vote tally to Sheet in memory (no blocking flush)
+    sheet.getRange(rowIndex, 8).setValue(JSON.stringify(pollData));
   },
 
   /**
