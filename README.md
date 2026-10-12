@@ -42,11 +42,11 @@ A production-ready Google Apps Script (V8 runtime) integration with Slack and Go
   * Supports smart/curly quotes (`“`, `”`) and standard double quotes (`"`).
   * Sends Block Kit message with `<!channel>` broadcast and records state in `ActivePolls`.
 * **Interactive Button Voting**:
-  * Toggles user votes on button clicks (voting again removes the vote).
-  * Directly returns updated Block Kit payloads in HTTP response to guarantee sub-second execution without Slack 3-second timeouts.
+  * Single-choice voting with toggle-off support (clicking the same option removes your vote; clicking a different option switches your vote).
+  * Parses current voter state directly from `payload.message.blocks` with zero database read latency and immediately updates Slack via `payload.response_url` (~200ms execution), followed by background persistence to `ActivePolls`.
 * **Auto-Expiration**:
   * Minute-level time-driven trigger (`minuteTrigger`).
-  * Closes expired polls, disables buttons (`*CLOSED*`), and posts final tallies into the message thread.
+  * Closes expired polls, disables buttons (`🔒 *CLOSED*`), and posts final tallies with voter mentions into the message thread.
 
 ---
 
@@ -77,6 +77,7 @@ npx clasp push
    * **Bot Token Scopes** (`xoxb-...`):
      * `commands`
      * `chat:write`
+     * `channels:join` *(Allows the bot to auto-join public channels to trigger `@channel` notifications)*
      * `users:read`
      * `users.profile:read`
    * **User Token Scopes** (`xoxp-...`):
