@@ -145,12 +145,15 @@ const PollWorkflow = {
     const initialVoteState = options.map(o => ({ text: o, voters: [] }));
     const blocks = this.buildPollBlocks(pollId, question, options, initialVoteState, expiryDate, false);
 
+    // Attempt to join channel first so bot is permitted to trigger @channel notifications
+    try {
+      Core.slackApi("conversations.join", { channel: channelId });
+    } catch (_) {}
+
     const res = Core.slackApi("chat.postMessage", {
       channel: channelId,
       blocks: blocks,
-      text: `<!channel> 📊 New Poll: ${question}`,
-      link_names: 1,
-      parse: "full"
+      text: `<!channel> 📊 New Poll: ${question}`
     });
 
     if (res.ok) {
@@ -169,7 +172,8 @@ const PollWorkflow = {
   },
 
   /**
-   * Handles button clicks, updates sheet, and refreshes message
+   * Handles button clicks with zero-latency block parsing (Workaround 1)
+   * Updates Slack immediately via response_url before syncing to Google Sheets.
    */
   handleVote(payload, actionValue) {
     if (!actionValue || !actionValue.includes("|")) return;
@@ -177,107 +181,111 @@ const PollWorkflow = {
     const [pollId, optIndexStr] = actionValue.split("|");
     const targetOptIndex = parseInt(optIndexStr, 10);
     const userId = payload.user ? payload.user.id : null;
-    if (!userId) return;
+    if (!userId || isNaN(targetOptIndex)) return;
 
-    const sheet = Core.getSheet("ActivePolls");
-    const data = sheet.getDataRange().getValues();
-    
-    let rowIndex = -1;
+    // 1. Parse current poll state directly from payload.message.blocks (0ms latency)
+    const msgBlocks = (payload.message && Array.isArray(payload.message.blocks)) ? payload.message.blocks : null;
     let pollData = null;
 
-    // Search sheet backwards from most recent polls
-    for (let i = data.length - 1; i >= 1; i--) {
-      const sheetPollId = String(data[i][0]).trim();
-      const status = String(data[i][2]).trim();
-      if (sheetPollId === String(pollId).trim() && status.toLowerCase() === "open") {
-        rowIndex = i + 1;
-        try {
-          pollData = typeof data[i][7] === "string" ? JSON.parse(data[i][7]) : data[i][7];
-        } catch (e) {
-          console.error("Failed to parse poll JSON in sheet: " + e);
-        }
-        break;
-      }
+    if (msgBlocks && msgBlocks.length > 2) {
+      const optionBlocks = msgBlocks.slice(2);
+      pollData = optionBlocks.map(block => {
+        const rawMrkdwn = (block.text && block.text.text) ? block.text.text : "";
+        const lines = rawMrkdwn.split("\n");
+        // Extract option title from first line: *Option Title*
+        const optTitle = (lines[0] || "").replace(/^\*|\*$/g, "").trim();
+        // Extract all <@U...> voter IDs from the remaining lines
+        const voterMatches = lines.slice(1).join("\n").match(/<@(U[A-Z0-9]+)>/g) || [];
+        const voters = voterMatches.map(m => m.replace(/<@|>/g, ""));
+        return { text: optTitle, voters: voters };
+      });
     }
 
-    if (!pollData || rowIndex === -1) {
-      console.warn(`Poll target not found or already closed for pollId: ${pollId}`);
+    // 2. If blocks were present, apply single-choice vote toggle and update Slack IMMEDIATELY
+    if (pollData && pollData[targetOptIndex]) {
+      const alreadyVotedThis = pollData[targetOptIndex].voters.includes(userId);
+
+      // Remove user from ALL options (restricts to 1 vote per user)
+      pollData.forEach(opt => {
+        opt.voters = opt.voters.filter(id => id !== userId);
+      });
+
+      // Toggle: add vote only if they weren't already voting for this option
+      if (!alreadyVotedThis) {
+        pollData[targetOptIndex].voters.push(userId);
+      }
+
+      // Rebuild updated blocks preserving the original header and divider
+      const updatedBlocks = [msgBlocks[0], msgBlocks[1]];
+      pollData.forEach((opt, i) => {
+        const voteCount = opt.voters.length;
+        const bar = voteCount > 0 ? "⦿".repeat(voteCount) : "○";
+        const votersListStr = voteCount > 0 ? `\n${opt.voters.map(id => `<@${id}>`).join(" ")}` : "";
+
+        updatedBlocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*${opt.text}*\n${bar} *(${voteCount})*${votersListStr}`
+          },
+          accessory: {
+            type: "button",
+            text: { type: "plain_text", text: "Vote" },
+            value: `${pollId}|${i}`,
+            action_id: `v_${i}`
+          }
+        });
+      });
+
+      // Immediately update Slack via pre-signed response_url (~200ms total, never times out)
       if (payload.response_url) {
         try {
           UrlFetchApp.fetch(payload.response_url, {
             method: "post",
             contentType: "application/json; charset=utf-8",
             payload: JSON.stringify({
-              response_type: "ephemeral",
-              replace_original: false,
-              text: "⚠️ This poll is closed or no longer accepting votes."
+              replace_original: true,
+              text: (payload.message && payload.message.text) || "📊 Poll Updated",
+              blocks: updatedBlocks
             }),
             muteHttpExceptions: true
           });
-        } catch (_) {}
-      }
-      return;
-    }
-
-    // 1. Single-choice vote logic (one vote per user across all options)
-    const currentOptIndex = pollData.findIndex(opt => Array.isArray(opt.voters) && opt.voters.includes(userId));
-
-    // Remove user from all options
-    pollData.forEach(opt => {
-      if (Array.isArray(opt.voters)) {
-        opt.voters = opt.voters.filter(id => id !== userId);
-      } else {
-        opt.voters = [];
-      }
-    });
-
-    // If user clicked a different option (or had not voted yet), add vote to clicked option
-    // If user clicked the same option they already voted for, it remains unvoted (toggle off)
-    if (currentOptIndex !== targetOptIndex) {
-      if (!Array.isArray(pollData[targetOptIndex].voters)) pollData[targetOptIndex].voters = [];
-      pollData[targetOptIndex].voters.push(userId);
-    }
-
-    // 2. Build updated blocks immediately
-    const expiryRaw = data[rowIndex - 1][4];
-    const expiryDate = (expiryRaw instanceof Date) ? expiryRaw : new Date(expiryRaw);
-    const question = String(data[rowIndex - 1][1] || "");
-    const options = pollData.map(p => p.text);
-    const blocks = this.buildPollBlocks(pollId, question, options, pollData, expiryDate, false);
-
-    // 3. Resolve live channel ID and message TS from Slack interaction payload
-    const channelId = (payload.channel && payload.channel.id) || (payload.container && payload.container.channel_id) || String(data[rowIndex - 1][5]);
-    const messageTs = (payload.container && payload.container.message_ts) || (payload.message && payload.message.ts) || String(data[rowIndex - 1][6]).replace(/^'/, "");
-
-    // 4. Update Slack IMMEDIATELY using chat.update (authoritative API update)
-    Core.slackApi("chat.update", {
-      channel: channelId,
-      ts: messageTs,
-      blocks: blocks,
-      text: `<!channel> 📊 Poll: ${question}`
-    });
-
-    // Also notify response_url if present
-    if (payload.response_url) {
-      try {
-        UrlFetchApp.fetch(payload.response_url, {
-          method: "post",
-          contentType: "application/json; charset=utf-8",
-          payload: JSON.stringify({
-            response_type: "in_channel",
-            replace_original: true,
-            text: `<!channel> 📊 Poll: ${question}`,
-            blocks: blocks
-          }),
-          muteHttpExceptions: true
-        });
-      } catch (err) {
-        console.error("Error with response_url: " + err);
+        } catch (err) {
+          console.error("Error updating via response_url: " + err);
+        }
       }
     }
 
-    // 5. Save updated vote tally to Sheet in memory (no blocking flush)
-    sheet.getRange(rowIndex, 8).setValue(JSON.stringify(pollData));
+    // 3. Persist updated vote state to Google Sheet for expiration tracking
+    try {
+      const sheet = Core.getSheet("ActivePolls");
+      const data = sheet.getDataRange().getValues();
+
+      for (let i = data.length - 1; i >= 1; i--) {
+        const sheetPollId = String(data[i][0]).trim();
+        const status = String(data[i][2]).trim();
+        if (sheetPollId === String(pollId).trim() && status.toLowerCase() === "open") {
+          const rowIndex = i + 1;
+
+          // If pollData wasn't parsed from blocks, fall back to sheet data
+          if (!pollData) {
+            pollData = typeof data[i][7] === "string" ? JSON.parse(data[i][7]) : data[i][7];
+            const alreadyVoted = Array.isArray(pollData[targetOptIndex]?.voters) && pollData[targetOptIndex].voters.includes(userId);
+            pollData.forEach(opt => {
+              opt.voters = Array.isArray(opt.voters) ? opt.voters.filter(id => id !== userId) : [];
+            });
+            if (!alreadyVoted && pollData[targetOptIndex]) {
+              pollData[targetOptIndex].voters.push(userId);
+            }
+          }
+
+          sheet.getRange(rowIndex, 8).setValue(JSON.stringify(pollData));
+          break;
+        }
+      }
+    } catch (sheetErr) {
+      console.error("Failed to sync vote state to sheet: " + sheetErr);
+    }
   },
 
   /**
