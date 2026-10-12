@@ -34,7 +34,7 @@ A production-ready Google Apps Script (V8 runtime) integration with Slack and Go
   * Gracefully skips deactivated accounts and handles admin/owner permission boundaries (`cannot_update_admin_user`).
   * Stamps updated timestamp in Column K (`Updated At`).
 * **Daily Sync (`runDailySync`)**:
-  * Runs both pull and push routines and broadcasts an aggregated report to your configured summary channel.
+  * Runs both push and pull routines and broadcasts an aggregated report to your configured summary channel.
 
 ### 2. Interactive Polling
 * **Slash Command (`/poll`)**:

@@ -41,10 +41,10 @@ function doPost(e) {
 
 // Sync Roster (Both Ways) + Send Summary
 function runDailySync() {
-  const pullMsg = RosterWorkflow.pullSlackData();
   const pushMsg = RosterWorkflow.bulkPushToSlack();
+  const pullMsg = RosterWorkflow.pullSlackData();
   
-  const summary = `🔄 *Daily Roster Sync Summary*\n• ${pullMsg}\n• ${pushMsg}`;
+  const summary = `🔄 *Daily Roster Sync Summary*\n• ${pushMsg}\n• ${pullMsg}`;
   Core.slackApi("chat.postMessage", { 
     channel: SUMMARY_CHANNEL_ID, 
     text: summary 
@@ -58,8 +58,8 @@ function minuteTrigger() {
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Roster Bot')
-    .addItem('Step 1: Pull from Slack (Update Sheet)', 'manualPull')
-    .addItem('Step 2: Push to Slack (Update Slack)', 'manualPush')
+    .addItem('Step 1: Push to Slack (Update Slack)', 'manualPush')
+    .addItem('Step 2: Pull from Slack (Update Sheet)', 'manualPull')
     .addToUi();
 }
 
